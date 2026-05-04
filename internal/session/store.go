@@ -9,4 +9,6 @@ import (
 type Store interface {
 	Append(ctx context.Context, sessionID string, msg llm.Message) error
 	Load(ctx context.Context, sessionID string) ([]llm.Message, error)
+	List(ctx context.Context) ([]string, error)
+	Clear(ctx context.Context, sessionID string) error
 }
