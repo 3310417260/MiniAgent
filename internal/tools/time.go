@@ -18,6 +18,10 @@ func (TimeTool) Description() string {
 	return "Get the current local time."
 }
 
+func (TimeTool) Permission() Permission {
+	return PermissionReadOnly
+}
+
 // Schema is the model-facing contract. The model receives this JSON schema in
 // the chat request and can decide to return a get_time tool call.
 func (TimeTool) Schema() llm.ToolSchema {

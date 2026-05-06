@@ -2,133 +2,120 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
-	"miniagent/internal/agent"
 	"miniagent/internal/contextx"
 	"miniagent/internal/llm"
-	"miniagent/internal/prompt"
-	"miniagent/internal/tools"
+	"miniagent/internal/logx"
 )
 
-type fakeLoopClient struct {
-	responses []llm.GenerateResponse
-	requests  []llm.GenerateRequest
+type fakeStreamClient struct {
+	streamRequests []llm.GenerateRequest
+	generateCalls  int
 }
 
-func (f *fakeLoopClient) Generate(ctx context.Context, req llm.GenerateRequest) (llm.GenerateResponse, error) {
-	f.requests = append(f.requests, cloneGenerateRequest(req))
-	if len(f.responses) == 0 {
-		return llm.GenerateResponse{}, errors.New("no fake response left")
+func (f *fakeStreamClient) Generate(ctx context.Context, req llm.GenerateRequest) (llm.GenerateResponse, error) {
+	f.generateCalls++
+	return llm.GenerateResponse{}, errors.New("Generate should not be used by chatStream")
+}
+
+func (f *fakeStreamClient) GenerateStream(ctx context.Context, req llm.GenerateRequest, onDelta func(string)) (llm.GenerateResponse, error) {
+	f.streamRequests = append(f.streamRequests, cloneGenerateRequest(req))
+	if onDelta != nil {
+		onDelta("hello")
+		onDelta(" stream")
 	}
-
-	resp := f.responses[0]
-	f.responses = f.responses[1:]
-	return resp, nil
-}
-
-func (f *fakeLoopClient) GenerateStream(ctx context.Context, req llm.GenerateRequest, onDelta func(string)) (llm.GenerateResponse, error) {
-	return llm.GenerateResponse{}, errors.New("GenerateStream should not be used by the agent loop")
-}
-
-func TestRunAgentLoopExecutesToolAndFeedsResultBack(t *testing.T) {
-	toolset := []tools.Tool{tools.TimeTool{}}
-	dispatcher := agent.NewDispatcher(toolset)
-	call := llm.ToolCall{
-		ID:        "call_1",
-		Name:      "get_time",
-		Arguments: json.RawMessage(`{}`),
-	}
-	client := &fakeLoopClient{
-		responses: []llm.GenerateResponse{
-			{
-				Assistant: llm.Message{
-					Role:      llm.RoleAssistant,
-					Content:   "checking time",
-					ToolCalls: []llm.ToolCall{call},
-				},
-				ToolCalls: []llm.ToolCall{call},
-			},
-			{
-				Assistant: llm.Message{
-					Role:    llm.RoleAssistant,
-					Content: "final answer",
-				},
-			},
+	return llm.GenerateResponse{
+		Assistant: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: "hello stream",
 		},
-	}
-
-	messages := append(newConversation(prompt.BaseSystemPrompt), llm.Message{
-		Role:    llm.RoleUser,
-		Content: "what time is it?",
-	})
-
-	reply, updated, err := runAgentLoop(context.Background(), client, dispatcher, contextx.RecentNManager{MaxMessages: 40}, toolSchemas(toolset), messages, false, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reply.Content != "final answer" {
-		t.Fatalf("reply.Content = %q, want final answer", reply.Content)
-	}
-	if len(client.requests) != 2 {
-		t.Fatalf("model requests = %d, want 2", len(client.requests))
-	}
-
-	secondReqMessages := client.requests[1].Messages
-	if len(secondReqMessages) != 4 {
-		t.Fatalf("second request messages = %d, want 4", len(secondReqMessages))
-	}
-	toolMsg := secondReqMessages[3]
-	if toolMsg.Role != llm.RoleTool {
-		t.Fatalf("tool message role = %s, want %s", toolMsg.Role, llm.RoleTool)
-	}
-	if toolMsg.ToolCallID != call.ID || toolMsg.ToolName != call.Name {
-		t.Fatalf("tool message = %+v, want id=%s name=%s", toolMsg, call.ID, call.Name)
-	}
-	if len(updated) != 5 {
-		t.Fatalf("updated messages = %d, want 5", len(updated))
-	}
+	}, nil
 }
 
-func TestRunAgentLoopTrimsModelMessagesButKeepsFullHistory(t *testing.T) {
-	client := &fakeLoopClient{
-		responses: []llm.GenerateResponse{
-			{
-				Assistant: llm.Message{
-					Role:    llm.RoleAssistant,
-					Content: "final answer",
-				},
-			},
-		},
-	}
+func TestChatStreamUsesGenerateStreamWithoutTools(t *testing.T) {
+	client := &fakeStreamClient{}
 	messages := []llm.Message{
 		{Role: llm.RoleSystem, Content: "system"},
 		{Role: llm.RoleUser, Content: "old user"},
 		{Role: llm.RoleAssistant, Content: "old assistant"},
-		{Role: llm.RoleUser, Content: "new user"},
 	}
+	var printed string
 
-	reply, updated, err := runAgentLoop(context.Background(), client, agent.NewDispatcher(nil), contextx.RecentNManager{MaxMessages: 1}, nil, messages, false, nil)
+	reply, updated, err := chatStream(client, contextx.RecentNManager{MaxMessages: 1}, logx.NoopLogger{}, "test", messages, "plain chat", func(delta string) {
+		printed += delta
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reply.Content != "final answer" {
-		t.Fatalf("reply.Content = %q, want final answer", reply.Content)
+	if client.generateCalls != 0 {
+		t.Fatalf("Generate calls = %d, want 0", client.generateCalls)
 	}
-	if len(client.requests) != 1 {
-		t.Fatalf("model requests = %d, want 1", len(client.requests))
+	if len(client.streamRequests) != 1 {
+		t.Fatalf("stream requests = %d, want 1", len(client.streamRequests))
 	}
-	requestMessages := client.requests[0].Messages
-	if len(requestMessages) != 2 {
-		t.Fatalf("request messages = %d, want system + recent message", len(requestMessages))
+	req := client.streamRequests[0]
+	if len(req.Tools) != 0 {
+		t.Fatalf("tools = %d, want 0 for plain chat", len(req.Tools))
 	}
-	if requestMessages[0].Role != llm.RoleSystem || requestMessages[1].Content != "new user" {
-		t.Fatalf("request messages = %+v, want system and newest user", requestMessages)
+	if len(req.Messages) != 2 {
+		t.Fatalf("request messages = %d, want system + recent user", len(req.Messages))
+	}
+	if req.Messages[0].Role != llm.RoleSystem || req.Messages[1].Content != "plain chat" {
+		t.Fatalf("request messages = %+v, want system and plain chat", req.Messages)
+	}
+	if reply.Content != "hello stream" || printed != "hello stream" {
+		t.Fatalf("reply=%q printed=%q, want streamed assistant text", reply.Content, printed)
 	}
 	if len(updated) != 5 {
-		t.Fatalf("updated messages = %d, want full history plus reply", len(updated))
+		t.Fatalf("updated messages = %d, want original + user + assistant", len(updated))
+	}
+}
+
+func TestParseLogCommand(t *testing.T) {
+	filter, err := parseLogCommand("/logs", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filter.Session != "default" || filter.All || filter.MaxLines != defaultLogTail {
+		t.Fatalf("filter = %+v, want current default session", filter)
+	}
+
+	filter, err = parseLogCommand("/logs all type tool_result errors tail 5", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filter.All || filter.Session != "" || filter.Type != "tool_result" || !filter.ErrorsOnly || filter.MaxLines != 5 {
+		t.Fatalf("filter = %+v, want all tool_result errors tail 5", filter)
+	}
+
+	filter, err = parseLogCommand("/logs study", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filter.Session != "study" || filter.All {
+		t.Fatalf("filter = %+v, want shorthand session study", filter)
+	}
+}
+
+func TestMatchesLogFilter(t *testing.T) {
+	event := logx.Event{
+		Type:    "tool_result",
+		Session: "study",
+		Data: map[string]any{
+			"is_error": true,
+		},
+	}
+
+	if !matchesLogFilter(event, logFilter{Session: "study", Type: "tool_result", ErrorsOnly: true}) {
+		t.Fatal("expected matching study tool_result error")
+	}
+	if matchesLogFilter(event, logFilter{Session: "default"}) {
+		t.Fatal("did not expect default session match")
+	}
+	if !matchesLogFilter(event, logFilter{All: true, ErrorsOnly: true}) {
+		t.Fatal("expected all-session error match")
 	}
 }
 

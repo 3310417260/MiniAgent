@@ -2,3 +2,5 @@
 /miniagent
 /sessions/*
 !/sessions/.gitkeep
+/logs/*
+!/logs/.gitkeep
