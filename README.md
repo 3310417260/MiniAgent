@@ -24,6 +24,7 @@ For the current full-flow summary, read:
 
 - `docs/agent-harness-full-flow.md`
 - `docs/agent-core-roadmap.md`
+- `docs/v3-plan.md`
 
 Recommended study order:
 
@@ -42,20 +43,22 @@ Recommended study order:
 
 `main` contains the completed MiniAgent v1 learning harness.
 
-`MiniAgent_V2` is the branch for the next stage: evolving the mini harness into a more controllable coding agent prototype. The v2 work should keep the v1 learning value intact while improving structure, safety, observability, and extensibility.
+`MiniAgent_V2` contains the completed agent-core pass: planner, executor,
+tool permissions, context summaries, skill routing, local manifests, and
+allowlisted skill script execution.
 
-Recommended v2 focus areas:
+`MiniAgent_V3` is the branch for the next stage after the v2 agent-core pass.
+The v3 work focuses on the advanced layers behind real coding agents:
 
-- move the agent loop out of `cmd/miniagent` and into `internal/agent`
-- split file tools into smaller files
-- introduce a permission model before adding write or shell tools
-- restore streaming for plain chat paths
-- add safer file editing tools
-- add command execution only behind approval
-- add structured logs and richer session inspection
-- move planner rules into a local `SKILL.md` file
-- improve context trimming with summaries
-- route tasks through skills, manifests, and controlled script execution
+- lightweight project context and indexing
+- project-aware planner/executor context
+- MCP concepts and a minimal adapter
+- external file/resource permission boundaries
+- long-term memory and retrieval-augmented context
+- multi-agent role orchestration
+
+Read `docs/v3-plan.md` before starting v3 changes. It explains the current
+command flows and the recommended learning order for this branch.
 
 ## Quick Start
 
@@ -454,66 +457,6 @@ logs/miniagent.jsonl
 
 Each event carries a `session` field, so `/logs` can show current-session
 events while `/logs all` can show the cross-session timeline.
-
-## MiniAgent v2 Agent-Core Plan
-
-This branch replaces the v1 learning plan with the v2 refactor and capability plan.
-The next stage now skips some test-engineering-heavy work and focuses on the
-core parts of agent development:
-
-- agent orchestration
-- tool execution engineering
-- context engineering
-- skill routing and controlled capability loading
-
-The goal for v2 remains:
-
-```text
-Move from a compact learning harness to a more controllable coding agent prototype.
-```
-
-Completed foundation:
-
-1. Move `runAgentLoop` and tool-result handling into `internal/agent`.
-2. Split `internal/tools/files.go` into `list_files.go`, `read_file.go`, `grep_text.go`, and shared path helpers.
-3. Add a tool permission model before adding any write-capable tool.
-4. Add `write_file` only with explicit approval and path safety checks.
-5. Add safer patch-style editing, where the old text must match uniquely.
-6. Add a restricted `run_shell` tool with timeout, output limits, and approval.
-7. Add structured logs for model calls, tool calls, approvals, plans, and errors.
-8. Move planner instructions into `skills/planner/SKILL.md`.
-9. Add skill catalog, skill routing, skill loading, local manifests, and allowlisted skill scripts.
-
-Revised learning path:
-
-```text
-Day 10 consolidate the full agent-harness flow and architecture map
-Day 11 add summary-based context compression
-Day 12 improve tool execution policy, preflight, failure handling, and audit logs
-Day 13 connect skill routing/loading to the task execution flow
-Day 14 add lightweight project context/indexing for better codebase awareness
-```
-
-The main principle for v2:
-
-```text
-Model proposes actions.
-MiniAgent validates, limits, logs, and executes them.
-```
-
-Deferred engineering tasks:
-
-- session inspect/export commands
-- broader config file layer
-- wider automated test harness work
-- packaging and release polish
-
-Next advanced topics after this v2 core pass:
-
-- MCP server integration
-- external file permission boundaries
-- long-term memory / RAG
-- multi-agent or sub-agent orchestration
 
 ## Learning Notes
 
