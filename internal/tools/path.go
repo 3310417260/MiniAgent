@@ -3,9 +3,10 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+
+	"miniagent/internal/workspace"
 )
 
 func defaultJSON(input json.RawMessage) json.RawMessage {
@@ -16,11 +17,7 @@ func defaultJSON(input json.RawMessage) json.RawMessage {
 }
 
 func workspaceRoot() string {
-	root, err := os.Getwd()
-	if err != nil {
-		return "."
-	}
-	return root
+	return workspace.MustRoot()
 }
 
 func workspacePath(requested string) (string, string, string, error) {

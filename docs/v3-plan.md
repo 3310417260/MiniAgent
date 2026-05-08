@@ -323,8 +323,21 @@ flowchart TD
 
 - 扫描项目目录，生成一个小型 project map。
 - 记录 Go packages、入口文件、docs、skills、最近变动文件。
-- 新增 `/project` 或 `/index` 指令查看项目索引。
-- 在 `/task` 中可选注入精简项目地图。
+- 新增 `/workspace` 指令查看和切换目标 workspace。
+- 新增 `/project` 指令查看项目索引。
+- 在 `/task` 中注入精简项目地图：planner 用它制定计划，executor step 用它选择工具路径。
+
+Workspace 选择规则：
+
+```text
+默认：当前启动目录
+启动前配置：MINIAGENT_WORKSPACE=/path/to/project
+交互中切换：/workspace use <path>
+交互中重置：/workspace reset
+```
+
+`/workspace` 是 harness 状态，不是模型工具。切换后，read/list/grep/write/edit/run_shell
+都会以新的 workspace 作为路径边界。
 
 数据流：
 
@@ -333,7 +346,8 @@ flowchart TD
     A["workspace files"] --> B["project scanner"]
     B --> C["project index"]
     C --> D["CLI inspect command"]
-    C --> E["optional model context"]
+    C --> E["planner prompt context"]
+    C --> F["executor step prompt context"]
 ```
 
 ### Day 2: Project-Aware Task Context

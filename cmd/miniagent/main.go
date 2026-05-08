@@ -18,10 +18,12 @@ import (
 	"miniagent/internal/logx"
 	"miniagent/internal/plan"
 	"miniagent/internal/project"
+	"miniagent/internal/projectindex"
 	"miniagent/internal/prompt"
 	"miniagent/internal/session"
 	"miniagent/internal/skill"
 	"miniagent/internal/tools"
+	"miniagent/internal/workspace"
 )
 
 const (
@@ -88,7 +90,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	systemPrompt, err := loadSystemPrompt()
+	workspaceRoot, err := workspace.Root()
+	if err != nil {
+		return err
+	}
+	systemPrompt, err := loadSystemPrompt(workspaceRoot)
 	if err != nil {
 		return err
 	}
@@ -125,7 +131,7 @@ func run() error {
 
 	userInput := strings.TrimSpace(strings.Join(os.Args[1:], " "))
 	if userInput == "" {
-		return runInteractive(runtime, planner, planState, logger, store, summaryStore, skillStore, sessionID, systemPrompt, plannerPrompt, debugAPI)
+		return runInteractive(runtime, planner, planState, logger, store, summaryStore, skillStore, sessionID, systemPrompt, plannerPrompt, workspaceRoot, debugAPI)
 	}
 
 	ctx := context.Background()
@@ -150,7 +156,7 @@ func run() error {
 	return nil
 }
 
-func runInteractive(runtime *agent.Agent, planner *agent.Agent, planState *plan.State, logger *logx.JSONLLogger, store session.Store, summaryStore contextx.SummaryStore, skillStore skill.Store, sessionID string, systemPrompt string, plannerPrompt string, debugAPI bool) error {
+func runInteractive(runtime *agent.Agent, planner *agent.Agent, planState *plan.State, logger *logx.JSONLLogger, store session.Store, summaryStore contextx.SummaryStore, skillStore skill.Store, sessionID string, systemPrompt string, plannerPrompt string, workspaceRoot string, debugAPI bool) error {
 	scanner := bufio.NewScanner(os.Stdin)
 	ctx := context.Background()
 	messages, err := loadSessionMessages(ctx, store, sessionID, systemPrompt)
@@ -160,7 +166,8 @@ func runInteractive(runtime *agent.Agent, planner *agent.Agent, planState *plan.
 
 	fmt.Println("MiniAgent interactive mode")
 	fmt.Printf("Session: %s (%d messages)\n", sessionID, len(messages))
-	fmt.Println("Type your message and press Enter. Commands: /help /chat /task /plan /summary /skill-route /skill-load /skill-scripts /skill-manifest /skills /skill /logs /history /session /debug-api /clear /exit")
+	fmt.Printf("Workspace: %s\n", workspaceRoot)
+	fmt.Println("Type your message and press Enter. Commands: /help /chat /task /plan /project /workspace /summary /skill-route /skill-load /skill-scripts /skill-manifest /skills /skill /logs /history /session /debug-api /clear /exit")
 
 	for {
 		fmt.Print("> ")
@@ -222,7 +229,7 @@ func runInteractive(runtime *agent.Agent, planner *agent.Agent, planState *plan.
 			}
 
 			startLen := len(messages)
-			reply, updatedMessages, err := planThenExecute(scanner, planner, runtime, planState, logger, skillStore, sessionID, messages, taskInput, plannerPrompt, debugAPI, cliApproveTool(scanner, logger, sessionID), func(delta string) {
+			reply, updatedMessages, err := planThenExecute(scanner, planner, runtime, planState, logger, skillStore, sessionID, messages, taskInput, plannerPrompt, workspaceRoot, debugAPI, cliApproveTool(scanner, logger, sessionID), func(delta string) {
 				fmt.Print(delta)
 			})
 			if err != nil {
@@ -249,6 +256,8 @@ func runInteractive(runtime *agent.Agent, planner *agent.Agent, planState *plan.
 			fmt.Println("/chat <message> streams a plain chat response without tools.")
 			fmt.Println("/task <goal> asks the model to plan first, then waits for your approval before executing.")
 			fmt.Println("/plan shows the current task plan.")
+			fmt.Println("/project shows a lightweight map of the target workspace.")
+			fmt.Println("/workspace shows the target workspace; /workspace use <path> switches it.")
 			fmt.Println("/summary shows the current rolling summary for this session.")
 			fmt.Println("/skill-route <task> asks the model to choose one skill from name + description only.")
 			fmt.Println("/skill-load <task> routes, loads the selected SKILL.md body, and asks for dry-run guidance without tools.")
@@ -284,6 +293,15 @@ func runInteractive(runtime *agent.Agent, planner *agent.Agent, planState *plan.
 			continue
 		case "/plan":
 			fmt.Println(planState.String())
+			continue
+		case "/project":
+			if err := printProjectIndex(ctx, workspaceRoot); err != nil {
+				fmt.Fprintf(os.Stderr, "miniagent: %v\n", err)
+			}
+			continue
+		case "/workspace":
+			fmt.Printf("Workspace: %s\n", workspaceRoot)
+			fmt.Println("usage: /workspace use <path> | /workspace reset")
 			continue
 		case "/summary":
 			if err := printSummary(ctx, summaryStore, sessionID); err != nil {
@@ -322,6 +340,20 @@ func runInteractive(runtime *agent.Agent, planner *agent.Agent, planState *plan.
 				fmt.Println("Selected skill body was not injected or executed in /skill-route.")
 			}
 			continue
+		}
+		if strings.HasPrefix(userInput, "/workspace") {
+			nextRoot, nextSystemPrompt, handled, err := handleWorkspaceCommand(userInput, workspaceRoot)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "miniagent: %v\n", err)
+				continue
+			}
+			if handled {
+				workspaceRoot = nextRoot
+				systemPrompt = nextSystemPrompt
+				messages = replaceSystemPrompt(messages, systemPrompt)
+				fmt.Printf("Workspace: %s\n", workspaceRoot)
+				continue
+			}
 		}
 		if strings.HasPrefix(userInput, "/skill-load") {
 			taskInput := strings.TrimSpace(strings.TrimPrefix(userInput, "/skill-load"))
@@ -402,7 +434,7 @@ func runInteractive(runtime *agent.Agent, planner *agent.Agent, planState *plan.
 	}
 }
 
-func planThenExecute(scanner *bufio.Scanner, planner *agent.Agent, runtime *agent.Agent, planState *plan.State, logger logx.Logger, skillStore skill.Store, sessionID string, messages []llm.Message, task string, plannerPrompt string, debugAPI bool, approve agent.ApprovalFunc, onDelta func(string)) (llm.Message, []llm.Message, error) {
+func planThenExecute(scanner *bufio.Scanner, planner *agent.Agent, runtime *agent.Agent, planState *plan.State, logger logx.Logger, skillStore skill.Store, sessionID string, messages []llm.Message, task string, plannerPrompt string, workspaceRoot string, debugAPI bool, approve agent.ApprovalFunc, onDelta func(string)) (llm.Message, []llm.Message, error) {
 	taskSkill := routeTaskSkill(runtime.Client, logger, skillStore, task, debugAPI, sessionID)
 	if taskSkill.Skill.Name != "" {
 		fmt.Println()
@@ -412,11 +444,12 @@ func planThenExecute(scanner *bufio.Scanner, planner *agent.Agent, runtime *agen
 		}
 		fmt.Println("Loaded selected SKILL.md for planning and execution guidance. Scripts still require manifest permission and approval.")
 	}
+	projectContext := buildTaskProjectContext(logger, sessionID, workspaceRoot)
 
 	feedback := ""
 	for {
 		planState.Clear()
-		if err := generatePlan(planner, task, feedback, plannerPrompt, taskSkill, debugAPI, sessionID); err != nil {
+		if err := generatePlan(planner, task, feedback, plannerPrompt, taskSkill, projectContext, debugAPI, sessionID); err != nil {
 			return llm.Message{}, messages, err
 		}
 		if planState.Empty() {
@@ -446,7 +479,7 @@ func planThenExecute(scanner *bufio.Scanner, planner *agent.Agent, runtime *agen
 				"title":      planState.Title,
 				"step_count": len(planState.Steps),
 			})
-			return executePlanSteps(runtime, planState, logger, sessionID, messages, task, taskSkill, debugAPI, approve, onDelta)
+			return executePlanSteps(runtime, planState, logger, sessionID, messages, task, taskSkill, projectContext, debugAPI, approve, onDelta)
 		case lower == "cancel":
 			logEvent(context.Background(), logger, sessionID, "plan_cancelled", map[string]any{
 				"title": planState.Title,
@@ -467,7 +500,7 @@ func planThenExecute(scanner *bufio.Scanner, planner *agent.Agent, runtime *agen
 	}
 }
 
-func executePlanSteps(runtime *agent.Agent, planState *plan.State, logger logx.Logger, sessionID string, messages []llm.Message, task string, taskSkill taskSkillContext, debugAPI bool, approve agent.ApprovalFunc, onDelta func(string)) (llm.Message, []llm.Message, error) {
+func executePlanSteps(runtime *agent.Agent, planState *plan.State, logger logx.Logger, sessionID string, messages []llm.Message, task string, taskSkill taskSkillContext, projectContext string, debugAPI bool, approve agent.ApprovalFunc, onDelta func(string)) (llm.Message, []llm.Message, error) {
 	updatedMessages := messages
 	var lastReply llm.Message
 
@@ -482,6 +515,9 @@ func executePlanSteps(runtime *agent.Agent, planState *plan.State, logger logx.L
 		fmt.Println()
 
 		stepPrompt := fmt.Sprintf("Execute only step %d of this approved plan. Do not execute later steps yet.\n\nTask:\n%s\n\nCurrent step:\n%s\n\nApproved plan:\n%s", stepIndex, task, step.Text, planState.String())
+		if strings.TrimSpace(projectContext) != "" {
+			stepPrompt += "\n\n" + projectContext
+		}
 		if taskSkill.Skill.Name != "" {
 			stepPrompt += "\n\nSelected skill guidance for this task:\n" + taskSkillPrompt(taskSkill)
 		}
@@ -580,10 +616,42 @@ func taskSkillPrompt(ctx taskSkillContext) string {
 	return b.String()
 }
 
-func generatePlan(planner *agent.Agent, task string, feedback string, plannerPrompt string, taskSkill taskSkillContext, debugAPI bool, sessionID string) error {
+func buildTaskProjectContext(logger logx.Logger, sessionID string, workspaceRoot string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	index, err := projectindex.Scan(ctx, workspaceRoot, projectindex.Options{
+		MaxPackages: 20,
+		MaxDocs:     12,
+		MaxSkills:   12,
+	})
+	if err != nil {
+		logEvent(context.Background(), logger, sessionID, "project_index_failed", map[string]any{
+			"workspace": workspaceRoot,
+			"error":     err.Error(),
+		})
+		return ""
+	}
+	prompt := index.Prompt()
+	logEvent(context.Background(), logger, sessionID, "project_index_loaded", map[string]any{
+		"workspace":     index.Workspace,
+		"module":        index.Module,
+		"entrypoints":   len(index.Entrypoints),
+		"packages":      len(index.Packages),
+		"docs":          len(index.Docs),
+		"skills":        len(index.Skills),
+		"content_chars": len([]rune(prompt)),
+	})
+	return prompt
+}
+
+func generatePlan(planner *agent.Agent, task string, feedback string, plannerPrompt string, taskSkill taskSkillContext, projectContext string, debugAPI bool, sessionID string) error {
 	planningPrompt := fmt.Sprintf("Create a concise execution plan for this task. You must call set_plan with a short title and 3 to 6 actionable steps. Do not execute the task yet.\n\nTask:\n%s", task)
 	if strings.TrimSpace(feedback) != "" {
 		planningPrompt += "\n\nUser revision feedback:\n" + feedback
+	}
+	if strings.TrimSpace(projectContext) != "" {
+		planningPrompt += "\n\n" + projectContext
 	}
 	if taskSkill.Skill.Name != "" {
 		planningPrompt += "\n\nSelected skill guidance for planning:\n" + taskSkillPrompt(taskSkill)
@@ -1137,6 +1205,69 @@ func printSummary(ctx context.Context, store contextx.SummaryStore, sessionID st
 	return nil
 }
 
+func printProjectIndex(ctx context.Context, workspaceRoot string) error {
+	// /project is intentionally local-only for V3 Day 1: first make the
+	// harness observe the target workspace before injecting this map into prompts.
+	index, err := projectindex.Scan(ctx, workspaceRoot, projectindex.Options{})
+	if err != nil {
+		return err
+	}
+	fmt.Println(index.String())
+	return nil
+}
+
+func handleWorkspaceCommand(input string, currentRoot string) (string, string, bool, error) {
+	fields := strings.Fields(input)
+	if len(fields) == 0 || fields[0] != "/workspace" {
+		return currentRoot, "", false, nil
+	}
+	if len(fields) < 2 {
+		return currentRoot, "", false, errors.New("usage: /workspace use <path> | /workspace reset")
+	}
+
+	switch fields[1] {
+	case "use":
+		path := strings.TrimSpace(strings.TrimPrefix(input, "/workspace use"))
+		if path == "" {
+			return currentRoot, "", true, errors.New("usage: /workspace use <path>")
+		}
+		root, err := workspace.SetRoot(path)
+		if err != nil {
+			return currentRoot, "", true, err
+		}
+		systemPrompt, err := loadSystemPrompt(root)
+		if err != nil {
+			return currentRoot, "", true, err
+		}
+		return root, systemPrompt, true, nil
+	case "reset":
+		workspace.ClearOverride()
+		root, err := workspace.Root()
+		if err != nil {
+			return currentRoot, "", true, err
+		}
+		systemPrompt, err := loadSystemPrompt(root)
+		if err != nil {
+			return currentRoot, "", true, err
+		}
+		return root, systemPrompt, true, nil
+	default:
+		return currentRoot, "", true, fmt.Errorf("unknown /workspace option: %s", fields[1])
+	}
+}
+
+func replaceSystemPrompt(messages []llm.Message, systemPrompt string) []llm.Message {
+	if len(messages) == 0 {
+		return newConversation(systemPrompt)
+	}
+	updated := append([]llm.Message(nil), messages...)
+	if updated[0].Role == llm.RoleSystem {
+		updated[0].Content = systemPrompt
+		return updated
+	}
+	return append(newConversation(systemPrompt), updated...)
+}
+
 func describeMessage(msg llm.Message) string {
 	content := strings.TrimSpace(msg.Content)
 	if content == "" {
@@ -1210,8 +1341,8 @@ func initialSessionID() (string, error) {
 	return id, nil
 }
 
-func loadSystemPrompt() (string, error) {
-	agentsPath, err := project.FindAGENTSMD(".")
+func loadSystemPrompt(workspaceRoot string) (string, error) {
+	agentsPath, err := project.FindAGENTSMD(workspaceRoot)
 	if err != nil {
 		return prompt.BuildSystemPrompt(prompt.BaseSystemPrompt, ""), nil
 	}

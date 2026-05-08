@@ -186,6 +186,28 @@ Use spreadsheet instructions.
 	}
 }
 
+func TestBuildTaskProjectContext(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/context\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	contextText := buildTaskProjectContext(logx.NoopLogger{}, "test", root)
+	for _, want := range []string{
+		"Project context",
+		"workspace map only",
+		"Go module: example.com/context",
+		"main.go",
+	} {
+		if !strings.Contains(contextText, want) {
+			t.Fatalf("project context missing %q:\n%s", want, contextText)
+		}
+	}
+}
+
 func cloneGenerateRequest(req llm.GenerateRequest) llm.GenerateRequest {
 	req.Messages = append([]llm.Message(nil), req.Messages...)
 	req.Tools = append([]llm.ToolSchema(nil), req.Tools...)

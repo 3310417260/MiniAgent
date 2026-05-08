@@ -110,6 +110,8 @@ Inside interactive mode:
 /chat <message>
 /task <goal>
 /plan
+/project
+/workspace
 /summary
 /skill-route <task>
 /skill-load <task>
@@ -134,6 +136,10 @@ Core commands:
 /chat <message>        Plain streaming chat without tools.
 /task <goal>           Plan first, ask for approval, then execute steps.
 /plan                  Show the current in-memory task plan.
+/project               Show a lightweight map of the target workspace.
+/workspace             Show the target workspace.
+/workspace use <path>  Switch the target workspace for this CLI process.
+/workspace reset       Reset to MINIAGENT_WORKSPACE or the current directory.
 /summary               Show the current session's rolling summary.
 /history               Show the current session message history.
 /debug-api             Toggle raw API request/response printing.
@@ -166,6 +172,12 @@ skill catalog (`name + description`) to the router. If a relevant skill is
 selected, MiniAgent loads only that one `SKILL.md` body into the planner and
 executor prompts. This keeps context small while still giving the agent
 task-specific guidance.
+
+`/task <goal>` also scans the current workspace once and injects a compact
+project map into the planner prompt and each executor step prompt. The map
+contains structure such as module name, entrypoints, packages, docs, and skills;
+it does not include file contents. The model must still use tools such as
+`read_file` or `grep_text` when it needs real file content.
 
 `/skill-scripts <skill>` lists files under one skill's `scripts/` directory.
 It does not execute them.
@@ -230,6 +242,7 @@ Runtime:
 
 ```text
 MINIAGENT_SESSION=study
+MINIAGENT_WORKSPACE=/path/to/target/project
 MINIAGENT_DEBUG_API=1
 MINIAGENT_CONTEXT_MESSAGES=20
 MINIAGENT_SUMMARY_TRIGGER_MESSAGES=40
@@ -291,6 +304,12 @@ Runtime logs are written to:
 logs/miniagent.jsonl
 ```
 
+`MINIAGENT_WORKSPACE` points MiniAgent at the initial target project it should
+read, search, edit, test, and index. If it is unset, MiniAgent uses the current
+working directory. In interactive mode, `/workspace use <path>` can switch the
+target workspace without restarting the CLI. Sessions, logs, and local skills
+still stay under the MiniAgent process directory.
+
 ## Tools
 
 MiniAgent currently exposes local tools to the model:
@@ -351,7 +370,9 @@ internal/tools/         local tool interface and tool implementations
 internal/session/       JSONL session store
 internal/contextx/      context trimming and rolling summaries
 internal/project/       AGENTS.md discovery
+internal/projectindex/  lightweight workspace/project map
 internal/prompt/        system prompt construction
+internal/workspace/     target workspace resolution
 docs/                   learning notes
 sessions/               JSONL session files
 AGENTS.md               project-level instructions loaded into the system prompt
