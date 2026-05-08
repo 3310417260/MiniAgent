@@ -74,18 +74,18 @@ func (RunShellTool) Execute(ctx context.Context, input json.RawMessage) (Result,
 		MaxOutputBytes int      `json:"max_output_bytes"`
 	}
 	if err := json.Unmarshal(defaultJSON(input), &args); err != nil {
-		return Result{Content: "invalid arguments: " + err.Error(), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "invalid arguments: " + err.Error(), Recoverable: true, SuggestedNextStep: "Call run_shell again with command and args as separate JSON fields."}), nil
 	}
 
 	command := strings.TrimSpace(args.Command)
 	if command == "" {
-		return Result{Content: "command is required", IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "command is required", Recoverable: true, SuggestedNextStep: "Retry with an allowlisted command name."}), nil
 	}
 	if strings.ContainsAny(command, `/\`) {
-		return Result{Content: "command must be an executable name, not a path", IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "command must be an executable name, not a path", Recoverable: true, SuggestedNextStep: "Retry with only the executable name and separate args."}), nil
 	}
 	if !isAllowedShellCommand(command, args.Args) {
-		return Result{Content: "command is not allowlisted: " + shellDisplay(command, args.Args), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorCommandNotAllowed, Message: "command is not allowlisted: " + shellDisplay(command, args.Args), Recoverable: true, SuggestedNextStep: "Use an allowlisted verification command such as go test ./... or git status --short, or explain that this command is not permitted.", Details: map[string]any{"command": command, "args": args.Args}}), nil
 	}
 
 	timeoutSeconds := clamp(args.TimeoutSeconds, defaultShellTimeoutSeconds, maxShellTimeoutSeconds)
@@ -113,7 +113,7 @@ func (RunShellTool) Execute(ctx context.Context, input json.RawMessage) (Result,
 			if errors.As(err, &exitErr) {
 				exitCode = exitErr.ExitCode()
 			} else {
-				return Result{Content: "run command: " + err.Error(), IsError: true}, nil
+				return ErrorResult(ToolError{Type: ErrorExecution, Message: "run command: " + err.Error(), Recoverable: true, SuggestedNextStep: "Check whether the command exists and retry with an allowlisted command.", Details: map[string]any{"command": command, "args": args.Args}}), nil
 			}
 		}
 	}
@@ -128,10 +128,29 @@ func (RunShellTool) Execute(ctx context.Context, input json.RawMessage) (Result,
 	lines = appendShellOutput(lines, "stdout", stdout)
 	lines = appendShellOutput(lines, "stderr", stderr)
 
-	return Result{
-		Content: strings.Join(lines, "\n"),
-		IsError: exitCode != 0,
-	}, nil
+	content := strings.Join(lines, "\n")
+	if exitCode != 0 {
+		errType := ErrorExecution
+		nextStep := "Read stdout/stderr, fix the issue if possible, and retry only when the command or project state has changed."
+		if timedOut {
+			errType = ErrorTimeout
+			nextStep = "Use a narrower command or a smaller task before retrying."
+		}
+		return ErrorResult(ToolError{
+			Type:              errType,
+			Message:           content,
+			Recoverable:       true,
+			SuggestedNextStep: nextStep,
+			Details: map[string]any{
+				"command":   command,
+				"args":      args.Args,
+				"exit_code": exitCode,
+				"timed_out": timedOut,
+			},
+		}), nil
+	}
+
+	return Result{Content: content}, nil
 }
 
 type limitedBuffer struct {

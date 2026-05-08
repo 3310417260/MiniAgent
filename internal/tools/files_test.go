@@ -199,6 +199,7 @@ func TestEditFileToolRejectsMissingOldText(t *testing.T) {
 	if !result.IsError || !strings.Contains(result.Content, "not found") {
 		t.Fatalf("result = %+v, want missing old_text error", result)
 	}
+	assertToolErrorType(t, result, ErrorNotFound)
 }
 
 func TestEditFileToolRejectsAmbiguousOldText(t *testing.T) {
@@ -215,6 +216,7 @@ func TestEditFileToolRejectsAmbiguousOldText(t *testing.T) {
 	if !result.IsError || !strings.Contains(result.Content, "appears 2 times") {
 		t.Fatalf("result = %+v, want ambiguous old_text error", result)
 	}
+	assertToolErrorType(t, result, ErrorNotUnique)
 }
 
 func TestEditFileToolRejectsPathOutsideWorkspace(t *testing.T) {
@@ -257,6 +259,7 @@ func TestRunShellToolRejectsNonAllowlistedCommand(t *testing.T) {
 	if !result.IsError || !strings.Contains(result.Content, "not allowlisted") {
 		t.Fatalf("result = %+v, want allowlist rejection", result)
 	}
+	assertToolErrorType(t, result, ErrorCommandNotAllowed)
 }
 
 func TestRunShellToolRejectsCommandPath(t *testing.T) {
@@ -269,6 +272,27 @@ func TestRunShellToolRejectsCommandPath(t *testing.T) {
 	}
 	if !result.IsError || !strings.Contains(result.Content, "not a path") {
 		t.Fatalf("result = %+v, want command path rejection", result)
+	}
+}
+
+func assertToolErrorType(t *testing.T, result Result, want ErrorType) {
+	t.Helper()
+	if result.Error == nil {
+		t.Fatalf("result.Error = nil, want %s; content=%s", want, result.Content)
+	}
+	if result.Error.Type != want {
+		t.Fatalf("error type = %s, want %s; content=%s", result.Error.Type, want, result.Content)
+	}
+
+	var payload struct {
+		OK        bool      `json:"ok"`
+		ErrorType ErrorType `json:"error_type"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("decode structured error: %v; content=%s", err, result.Content)
+	}
+	if payload.OK || payload.ErrorType != want {
+		t.Fatalf("payload = %+v, want ok=false error_type=%s", payload, want)
 	}
 }
 

@@ -179,21 +179,21 @@ go test exit_code != 0
 
 ## Planner Prompt And Skills
 
-当前 MiniAgent 把 planner prompt 写在 Go 代码里，这是最直接的学习实现。
+最初 MiniAgent 把 planner prompt 写在 Go 代码里，这是最直接的学习实现。
 
-后续可以把这部分迁移到类似 `SKILL.md` 的文件中：
+现在 v2 已经把这部分迁移到类似 `SKILL.md` 的文件中：
 
 ```text
 skills/planner/SKILL.md
 ```
 
-然后启动时读取文件，把内容注入 planner system prompt。
+启动时读取文件，把内容注入 planner system prompt。
 
 可以这样理解：
 
 ```text
-现在：Go 字符串硬编码 planner 规则
-以后：SKILL.md 保存 planner 规则，Go 负责加载和注入
+以前：Go 字符串硬编码 planner 规则
+现在：SKILL.md 保存 planner 规则，Go 负责加载和注入
 ```
 
 这样做的好处是：
@@ -204,4 +204,4 @@ skills/planner/SKILL.md
 planner 规则可以像文档一样维护和迭代
 ```
 
-但在当前阶段，硬编码更容易观察完整数据流，也更容易测试。
+如果 `skills/planner/SKILL.md` 不存在，代码里仍然保留 fallback prompt，保证 CLI 不会因为缺少 skill 文件而无法启动。

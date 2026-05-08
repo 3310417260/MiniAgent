@@ -13,8 +13,30 @@ It demonstrates the core pieces of a coding agent:
 - `AGENTS.md` project instructions
 - recent-message context trimming
 - debug output for raw API request/response JSON
+- minimal `SKILL.md` loading for planner instructions
+- allowlisted skill script execution behind approval
 
 The code intentionally stays compact and standard-library first so each layer is easy to inspect while learning.
+
+## Learning Path
+
+For the current full-flow summary, read:
+
+- `docs/agent-harness-full-flow.md`
+- `docs/agent-core-roadmap.md`
+
+Recommended study order:
+
+```text
+1. messages / sessions / context
+2. tool calling
+3. agent loop
+4. permissions / approval / preflight
+5. planner
+6. skills
+7. manifest local policy
+8. script execution audit logs
+```
 
 ## Branch Roadmap
 
@@ -30,11 +52,10 @@ Recommended v2 focus areas:
 - restore streaming for plain chat paths
 - add safer file editing tools
 - add command execution only behind approval
-- improve context trimming with summaries
 - add structured logs and richer session inspection
-
-Planner rules currently live in Go code. A later skills step can move those
-rules into a `SKILL.md` file that MiniAgent loads into the planner prompt.
+- move planner rules into a local `SKILL.md` file
+- improve context trimming with summaries
+- route tasks through skills, manifests, and controlled script execution
 
 ## Quick Start
 
@@ -50,6 +71,20 @@ Optional provider settings:
 export ZAI_BASE_URL="https://open.bigmodel.cn/api/paas/v4"
 export ZAI_MODEL="glm-4.6v"
 ```
+
+DeepSeek-compatible settings are also supported:
+
+```bash
+export DEEPSEEK_API_KEY="your-api-key"
+export DEEPSEEK_BASE_URL="https://api.deepseek.com"
+export DEEPSEEK_MODEL="deepseek-v4-flash"
+export DEEPSEEK_ENABLE_THINKING=false
+```
+
+`DEEPSEEK_ENABLE_THINKING=false` is DeepSeek-specific. MiniAgent sends it as
+`"enable_thinking": false` in the request body so models that require
+`reasoning_content` in thinking mode can run in non-thinking mode. Other
+providers do not read this variable.
 
 Run one prompt:
 
@@ -72,6 +107,13 @@ Inside interactive mode:
 /chat <message>
 /task <goal>
 /plan
+/summary
+/skill-route <task>
+/skill-load <task>
+/skill-scripts <skill>
+/skill-manifest <skill>
+/skills
+/skill <name>
 /logs
 /history
 /debug-api
@@ -83,32 +125,83 @@ Inside interactive mode:
 /exit
 ```
 
-`/history` prints the in-memory `[]llm.Message` history for the current session.
+Core commands:
 
-`/chat <message>` runs a plain streaming chat path without exposing tools.
+```text
+/chat <message>        Plain streaming chat without tools.
+/task <goal>           Plan first, ask for approval, then execute steps.
+/plan                  Show the current in-memory task plan.
+/summary               Show the current session's rolling summary.
+/history               Show the current session message history.
+/debug-api             Toggle raw API request/response printing.
+/clear                 Clear the current session.
+/exit                  Exit interactive mode.
+```
 
-`/task <goal>` asks the model to create a plan first. MiniAgent shows the plan,
-waits for approval or revision feedback, and only executes after approval.
+Skill commands:
 
-`/plan` shows the current in-memory task plan.
+```text
+/skills                List local skills from skills/*/SKILL.md.
+/skill <name>          Show one skill's metadata and prompt preview.
+/skill-route <task>    Send only name + description catalog and select a skill.
+/skill-load <task>     Route, load selected SKILL.md, and dry-run guidance.
+/skill-scripts <skill> List files under one skill's scripts/ directory.
+/skill-manifest <skill>
+                       Show local script execution policy.
+```
 
-`/logs` shows the structured JSONL log file path and recent events. By default
-it filters to the current session. Useful forms:
+`/skill-route <task>` sends only the skill catalog (`name + description`) to a
+router model and prints the selected skill. It does not inject skill bodies or
+execute skill scripts.
+
+`/skill-load <task>` first routes the task, then loads only the selected
+`SKILL.md` body into a dry-run model call. It exposes no tools and executes no
+scripts.
+
+`/task <goal>` also uses skill routing automatically. It first sends only the
+skill catalog (`name + description`) to the router. If a relevant skill is
+selected, MiniAgent loads only that one `SKILL.md` body into the planner and
+executor prompts. This keeps context small while still giving the agent
+task-specific guidance.
+
+`/skill-scripts <skill>` lists files under one skill's `scripts/` directory.
+It does not execute them.
+
+`/skill-manifest <skill>` shows the local `manifest.local.json` script
+execution policy for one skill. It does not execute scripts.
+
+`run_skill_script` is a guarded tool, not a free-form script runner. It
+reads script permissions from each skill's `manifest.local.json`, requires
+explicit approval after preflight validation, runs with a timeout, and truncates
+stdout/stderr. The demo manifest includes a direct shell-script demo and a
+`python3` runner demo.
+
+Manifests can also document reviewed-but-denied scripts with `allowed: false`
+and a `reason`, which is useful for third-party skills that need more review
+before execution.
+
+Session and log commands:
+
+```text
+/session               Show current session.
+/session list          List saved sessions.
+/session use <id>      Switch to a session, creating it if needed.
+/session new <id>      Create and switch to a new empty session.
+/logs                  Show recent structured JSONL events for current session.
+```
+
+Useful `/logs` forms:
 
 ```text
 /logs
 /logs all
 /logs session default
 /logs type tool_result
+/logs type skill_script_preflight
+/logs type skill_script_execute
 /logs errors
 /logs all errors tail 50
 ```
-
-`/debug-api` toggles raw and pretty JSON printing for API requests and responses. This is useful for seeing `tools`, `tool_calls`, and trimmed message payloads.
-
-`/clear` clears the current session history in memory and in `sessions/<id>.jsonl`.
-
-`/session use <id>` switches to a saved session, creating an empty one if no file exists yet.
 
 ## Environment Variables
 
@@ -123,6 +216,7 @@ ZAI_MODEL
 Fallback API variables are also supported:
 
 ```text
+DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL
 ZHIPUAI_API_KEY / ZHIPUAI_BASE_URL / ZHIPUAI_MODEL
 GLM_API_KEY / GLM_BASE_URL / GLM_MODEL
 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
@@ -134,10 +228,59 @@ Runtime:
 ```text
 MINIAGENT_SESSION=study
 MINIAGENT_DEBUG_API=1
-MINIAGENT_CONTEXT_MESSAGES=40
+MINIAGENT_CONTEXT_MESSAGES=20
+MINIAGENT_SUMMARY_TRIGGER_MESSAGES=40
+MINIAGENT_SUMMARY_KEEP_MESSAGES=20
+MINIAGENT_SUMMARY_BATCH_MESSAGES=5
+MINIAGENT_SUMMARY_MAX_CHARS=3000
+MINIAGENT_SUMMARY_TIMEOUT_SECONDS=20
+MINIAGENT_SUMMARY_MODEL=glm-4.6v
 ```
 
-`MINIAGENT_CONTEXT_MESSAGES` controls how many non-system messages are sent to the model. The full session is still kept in memory and persisted to disk.
+DeepSeek-specific:
+
+```text
+DEEPSEEK_ENABLE_THINKING=false
+DEEPSEEK_REASONING_EFFORT=none
+```
+
+`DEEPSEEK_ENABLE_THINKING=false` is the fast path for disabling thinking mode.
+`DEEPSEEK_REASONING_EFFORT` is optional and only sent when explicitly set.
+
+`MINIAGENT_CONTEXT_MESSAGES` controls how many recent non-system messages are
+sent to the model as raw history.
+
+`MINIAGENT_SUMMARY_TRIGGER_MESSAGES` controls when rolling summary compression
+starts. Once the non-system history is longer than this value, MiniAgent
+compresses older messages into `sessions/summaries/<session>.md`.
+
+`MINIAGENT_SUMMARY_KEEP_MESSAGES` controls how many newest messages are left
+uncompressed when updating the summary.
+
+`MINIAGENT_SUMMARY_BATCH_MESSAGES` controls how many not-yet-summarized older
+messages must accumulate before MiniAgent calls the summary model. This avoids
+summarizing again for every single message that slides out of the recent window.
+
+`MINIAGENT_SUMMARY_MAX_CHARS` is the summary size budget. MiniAgent asks the
+summary model to stay under this character limit and also truncates oversized
+summary output.
+
+`MINIAGENT_SUMMARY_TIMEOUT_SECONDS` limits how long a summary update may wait.
+If summary generation fails or times out, MiniAgent logs the failure and keeps
+running with the previous summary plus recent raw messages.
+
+`MINIAGENT_SUMMARY_MODEL` optionally selects a separate model for context
+summary updates. If it is not set, MiniAgent reuses the main chat model.
+
+Optional summary-provider overrides:
+
+```text
+MINIAGENT_SUMMARY_BASE_URL=...
+MINIAGENT_SUMMARY_API_KEY_ENV=ZAI_API_KEY
+```
+
+The full session is still kept in memory and persisted to disk. Summary
+compression only changes what is sent to the model for a single request.
 
 Runtime logs are written to:
 
@@ -157,6 +300,7 @@ grep_text
 write_file
 edit_file
 run_shell
+run_skill_script
 set_plan
 ```
 
@@ -174,8 +318,25 @@ Examples:
 The read tools are constrained to the workspace. `write_file` and `edit_file`
 can change workspace files, so they declare `workspace_write`. `run_shell` can
 execute a small allowlist of verification commands, so it declares `shell`.
-Both write and shell tools require explicit approval before execution.
+`run_skill_script` can execute locally authorized skill scripts, so it also
+declares `shell`. Write and shell tools require explicit approval before
+execution.
 Plan tools only change MiniAgent's in-memory harness state.
+
+Tool failures use a structured recovery format:
+
+```json
+{
+  "ok": false,
+  "error_type": "not_found",
+  "message": "old_text not found in file: notes.txt",
+  "recoverable": true,
+  "suggested_next_step": "Use read_file to inspect the file, then retry edit_file with exact old_text."
+}
+```
+
+MiniAgent sends this JSON back as a `role=tool` message so the model can decide
+whether to inspect, retry with corrected arguments, or stop and explain.
 
 ## Project Structure
 
@@ -185,7 +346,7 @@ internal/llm/           provider-neutral message types and OpenAI-compatible cli
 internal/agent/         tool dispatcher and agent struct skeleton
 internal/tools/         local tool interface and tool implementations
 internal/session/       JSONL session store
-internal/contextx/      context trimming
+internal/contextx/      context trimming and rolling summaries
 internal/project/       AGENTS.md discovery
 internal/prompt/        system prompt construction
 docs/                   learning notes
@@ -203,21 +364,23 @@ flowchart TD
     D --> E["full in-memory messages"]
     E --> F["user input"]
     F --> G["append user message"]
-    G --> H["context trimming"]
-    H --> I["send modelMessages + tools"]
-    I --> J{"tool_calls?"}
-    J -- "yes" --> K["execute local tools"]
-    K --> L["append tool result messages"]
-    L --> H
-    J -- "no" --> M["append final assistant message"]
-    M --> N["append new messages to JSONL"]
+    G --> H["context build"]
+    H --> I["system + summary + recent messages"]
+    I --> J["send modelMessages + tools"]
+    J --> K{"tool_calls?"}
+    K -- "yes" --> L["execute local tools"]
+    L --> M["append tool result messages"]
+    M --> H
+    K -- "no" --> N["append final assistant message"]
+    N --> O["append new messages to JSONL"]
 ```
 
 The important separation is:
 
 ```text
 full messages   = complete session history for /history and JSONL persistence
-modelMessages   = trimmed messages sent to the model for one request
+summary         = compressed older context in sessions/summaries/<session>.md
+modelMessages   = system + summary + recent raw messages sent for one request
 ```
 
 ## Tool Permissions
@@ -292,17 +455,24 @@ logs/miniagent.jsonl
 Each event carries a `session` field, so `/logs` can show current-session
 events while `/logs all` can show the cross-session timeline.
 
-## MiniAgent v2 Plan
+## MiniAgent v2 Agent-Core Plan
 
-This branch replaces the v1 learning plan with the v2 refactor and capability plan. The next version should grow in small, reviewable steps.
+This branch replaces the v1 learning plan with the v2 refactor and capability plan.
+The next stage now skips some test-engineering-heavy work and focuses on the
+core parts of agent development:
 
-The goal for v2:
+- agent orchestration
+- tool execution engineering
+- context engineering
+- skill routing and controlled capability loading
+
+The goal for v2 remains:
 
 ```text
 Move from a compact learning harness to a more controllable coding agent prototype.
 ```
 
-Recommended order:
+Completed foundation:
 
 1. Move `runAgentLoop` and tool-result handling into `internal/agent`.
 2. Split `internal/tools/files.go` into `list_files.go`, `read_file.go`, `grep_text.go`, and shared path helpers.
@@ -311,27 +481,17 @@ Recommended order:
 5. Add safer patch-style editing, where the old text must match uniquely.
 6. Add a restricted `run_shell` tool with timeout, output limits, and approval.
 7. Add structured logs for model calls, tool calls, approvals, plans, and errors.
-8. Add session inspection commands for viewing timestamps, tool calls, and raw stored messages.
-9. Add summary-based context trimming once recent-N trimming becomes too lossy.
-10. Update docs and tests after each capability lands.
+8. Move planner instructions into `skills/planner/SKILL.md`.
+9. Add skill catalog, skill routing, skill loading, local manifests, and allowlisted skill scripts.
 
-Suggested v2 learning path:
+Revised learning path:
 
 ```text
-Day 1  refactor agent loop into internal/agent
-Day 2  split file tools and shared path safety helpers
-Day 3  restore streaming for plain chat paths
-Day 4  design tool permissions and approval flow
-Day 5  add write_file with explicit approval
-Day 6  add safer edit_file based on unique old/new replacement
-Day 7  add restricted run_shell with timeout and output limits
-Day 8  add a simple task plan state
-Day 9  add structured JSONL logs
-Day 10 add session inspect/export commands
-Day 11 add summary-based context trimming
-Day 12 add a config file layer
-Day 13 explore lightweight project indexing
-Day 14 update docs, tests, and v2 architecture notes
+Day 10 consolidate the full agent-harness flow and architecture map
+Day 11 add summary-based context compression
+Day 12 improve tool execution policy, preflight, failure handling, and audit logs
+Day 13 connect skill routing/loading to the task execution flow
+Day 14 add lightweight project context/indexing for better codebase awareness
 ```
 
 The main principle for v2:
@@ -340,6 +500,20 @@ The main principle for v2:
 Model proposes actions.
 MiniAgent validates, limits, logs, and executes them.
 ```
+
+Deferred engineering tasks:
+
+- session inspect/export commands
+- broader config file layer
+- wider automated test harness work
+- packaging and release polish
+
+Next advanced topics after this v2 core pass:
+
+- MCP server integration
+- external file permission boundaries
+- long-term memory / RAG
+- multi-agent or sub-agent orchestration
 
 ## Learning Notes
 
@@ -353,6 +527,11 @@ Current notes:
 - `docs/day08-task-plan.md`
 - `docs/day09-structured-logs.md`
 - `docs/day10-mini-harness.md`
+- `docs/day11-skills-loader.md`
+- `docs/agent-harness-full-flow.md`
+- `docs/day11-context-summary.md`
+- `docs/day12-tool-recovery.md`
+- `docs/day13-skill-orchestration.md`
 
 New v2 notes should be added under `docs/` as each v2 step lands.
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"miniagent/internal/contextx"
 	"miniagent/internal/llm"
 	"miniagent/internal/logx"
 	"miniagent/internal/tools"
@@ -13,10 +14,11 @@ import (
 const defaultMaxTurns = 8
 
 type RunOptions struct {
-	DebugAPI    bool
-	OnDelta     func(string)
-	ApproveTool ApprovalFunc
-	SessionID   string
+	DebugAPI          bool
+	OnDelta           func(string)
+	ApproveTool       ApprovalFunc
+	SessionID         string
+	StopAfterToolCall bool
 }
 
 type RunResult struct {
@@ -26,10 +28,12 @@ type RunResult struct {
 }
 
 type ToolResult struct {
-	ToolCallID string
-	ToolName   string
-	Content    string
-	IsError    bool
+	ToolCallID  string
+	ToolName    string
+	Content     string
+	IsError     bool
+	ErrorType   tools.ErrorType
+	Recoverable bool
 }
 
 func (a *Agent) Run(ctx context.Context, messages []llm.Message, opts RunOptions) (RunResult, error) {
@@ -45,10 +49,17 @@ func (a *Agent) Run(ctx context.Context, messages []llm.Message, opts RunOptions
 	for turn := 1; turn <= a.maxTurns(); turn++ {
 		modelMessages := messages
 		if a.ContextManager != nil {
-			modelMessages = a.ContextManager.Build(messages)
+			var buildErr error
+			modelMessages, buildErr = a.ContextManager.Build(ctx, messages, contextx.BuildOptions{
+				SessionID: opts.SessionID,
+				DebugAPI:  opts.DebugAPI,
+			})
+			if buildErr != nil {
+				return RunResult{Messages: messages}, buildErr
+			}
 		}
 
-		fmt.Printf("Agent turn %d: sending %d/%d messages to model\n", turn, len(modelMessages), len(messages))
+		fmt.Printf("Agent turn %d: sending %d model messages (%d stored messages)\n", turn, len(modelMessages), len(messages))
 		a.log(ctx, opts.SessionID, "model_turn", map[string]any{
 			"turn":                turn,
 			"message_count":       len(messages),
@@ -86,6 +97,13 @@ func (a *Agent) Run(ctx context.Context, messages []llm.Message, opts RunOptions
 		if appendErr != nil {
 			return RunResult{Messages: messages, ToolResults: toolResults}, appendErr
 		}
+		if opts.StopAfterToolCall {
+			return RunResult{
+				Assistant:   resp.Assistant,
+				Messages:    messages,
+				ToolResults: toolResults,
+			}, nil
+		}
 	}
 
 	return RunResult{Messages: messages, ToolResults: toolResults}, errors.New("agent loop reached max turns")
@@ -105,22 +123,41 @@ func (a *Agent) appendToolResults(ctx context.Context, sessionID string, message
 			return messages, toolResults, err
 		}
 		if !found {
-			result = tools.Result{
-				Content: "tool not found: " + call.Name,
-				IsError: true,
-			}
+			result = tools.ErrorResult(tools.ToolError{
+				Type:              tools.ErrorUnknownTool,
+				Message:           "tool not found: " + call.Name,
+				Recoverable:       true,
+				SuggestedNextStep: "Choose one of the tools exposed in the current request instead of retrying this unknown tool.",
+				Details: map[string]any{
+					"tool": call.Name,
+				},
+			})
 		}
-		toolResults = append(toolResults, ToolResult{
+		toolResult := ToolResult{
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
 			Content:    result.Content,
 			IsError:    result.IsError,
-		})
-		a.log(ctx, sessionID, "tool_result", map[string]any{
+		}
+		if result.Error != nil {
+			toolResult.ErrorType = result.Error.Type
+			toolResult.Recoverable = result.Error.Recoverable
+		}
+		toolResults = append(toolResults, toolResult)
+		logData := map[string]any{
 			"tool":     call.Name,
 			"is_error": result.IsError,
 			"content":  result.Content,
-		})
+		}
+		if result.Error != nil {
+			logData["error_type"] = result.Error.Type
+			logData["recoverable"] = result.Error.Recoverable
+			logData["suggested_next_step"] = result.Error.SuggestedNextStep
+		}
+		a.log(ctx, sessionID, "tool_result", logData)
+		for _, event := range result.Events {
+			a.log(ctx, sessionID, event.Type, event.Data)
+		}
 
 		// A tool result is fed back as a message so the next model turn can use
 		// it to continue reasoning or produce the final answer.

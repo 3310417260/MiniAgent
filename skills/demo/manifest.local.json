@@ -1,0 +1,36 @@
+{
+  "scripts": [
+    {
+      "path": "scripts/echo_args.sh",
+      "description": "Safe demo script that prints its arguments and does not read or write workspace files.",
+      "runner": "direct",
+      "allowed": true,
+      "requires_approval": true,
+      "timeout_seconds": 5,
+      "max_output_bytes": 4000,
+      "max_args": 12,
+      "max_arg_bytes": 200
+    },
+    {
+      "path": "scripts/inspect_args.py",
+      "description": "Safe Python demo script that prints JSON describing its arguments.",
+      "runner": "python3",
+      "allowed": true,
+      "requires_approval": true,
+      "timeout_seconds": 5,
+      "max_output_bytes": 4000,
+      "max_args": 2,
+      "max_arg_bytes": 100,
+      "args": [
+        {
+          "type": "string",
+          "description": "Label to include in the JSON output."
+        },
+        {
+          "type": "integer",
+          "description": "Small integer count to echo back."
+        }
+      ]
+    }
+  ]
+}

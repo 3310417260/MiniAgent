@@ -19,17 +19,21 @@ const (
 )
 
 type OpenAIConfig struct {
-	APIKey  string
-	BaseURL string
-	Model   string
-	Client  *http.Client
+	APIKey          string
+	BaseURL         string
+	Model           string
+	EnableThinking  *bool
+	ReasoningEffort string
+	Client          *http.Client
 }
 
 type OpenAIClient struct {
-	apiKey     string
-	baseURL    string
-	model      string
-	httpClient *http.Client
+	apiKey          string
+	baseURL         string
+	model           string
+	enableThinking  *bool
+	reasoningEffort string
+	httpClient      *http.Client
 }
 
 func NewOpenAIClient(cfg OpenAIConfig) (*OpenAIClient, error) {
@@ -53,15 +57,18 @@ func NewOpenAIClient(cfg OpenAIConfig) (*OpenAIClient, error) {
 	}
 
 	return &OpenAIClient{
-		apiKey:     cfg.APIKey,
-		baseURL:    baseURL,
-		model:      model,
-		httpClient: httpClient,
+		apiKey:          cfg.APIKey,
+		baseURL:         baseURL,
+		model:           model,
+		enableThinking:  cfg.EnableThinking,
+		reasoningEffort: strings.TrimSpace(cfg.ReasoningEffort),
+		httpClient:      httpClient,
 	}, nil
 }
 
 func NewOpenAIClientFromEnv() (*OpenAIClient, error) {
 	apiKey := firstNonEmptyEnv(
+		"DEEPSEEK_API_KEY",
 		"ZAI_API_KEY",
 		"ZHIPUAI_API_KEY",
 		"GLM_API_KEY",
@@ -70,6 +77,7 @@ func NewOpenAIClientFromEnv() (*OpenAIClient, error) {
 	)
 
 	baseURL := firstNonEmptyEnv(
+		"DEEPSEEK_BASE_URL",
 		"ZAI_BASE_URL",
 		"ZHIPUAI_BASE_URL",
 		"GLM_BASE_URL",
@@ -78,17 +86,24 @@ func NewOpenAIClientFromEnv() (*OpenAIClient, error) {
 	)
 
 	model := firstNonEmptyEnv(
+		"DEEPSEEK_MODEL",
 		"ZAI_MODEL",
 		"ZHIPUAI_MODEL",
 		"GLM_MODEL",
 		"OPENAI_MODEL",
 		"MINIAGENT_MODEL",
 	)
+	enableThinking, reasoningEffort, err := DeepSeekRequestOptionsFromEnv()
+	if err != nil {
+		return nil, err
+	}
 
 	return NewOpenAIClient(OpenAIConfig{
-		APIKey:  apiKey,
-		BaseURL: baseURL,
-		Model:   model,
+		APIKey:          apiKey,
+		BaseURL:         baseURL,
+		Model:           model,
+		EnableThinking:  enableThinking,
+		ReasoningEffort: reasoningEffort,
 	})
 }
 
@@ -99,6 +114,44 @@ func firstNonEmptyEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func DeepSeekRequestOptionsFromEnv() (*bool, string, error) {
+	if !hasAnyEnv("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL") {
+		return nil, "", nil
+	}
+
+	enableThinking, err := optionalBoolEnv("DEEPSEEK_ENABLE_THINKING")
+	if err != nil {
+		return nil, "", err
+	}
+	return enableThinking, firstNonEmptyEnv("DEEPSEEK_REASONING_EFFORT"), nil
+}
+
+func optionalBoolEnv(key string) (*bool, error) {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		return nil, nil
+	}
+	switch value {
+	case "1", "true", "yes", "on":
+		enabled := true
+		return &enabled, nil
+	case "0", "false", "no", "off":
+		enabled := false
+		return &enabled, nil
+	default:
+		return nil, fmt.Errorf("invalid %s: use true or false", key)
+	}
+}
+
+func hasAnyEnv(keys ...string) bool {
+	for _, key := range keys {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *OpenAIClient) Generate(ctx context.Context, req GenerateRequest) (GenerateResponse, error) {
@@ -182,10 +235,12 @@ type openAIFunctionCall struct {
 }
 
 type openAIChatRequest struct {
-	Model    string              `json:"model"`
-	Messages []openAIChatMessage `json:"messages"`
-	Tools    []openAITool        `json:"tools,omitempty"`
-	Stream   bool                `json:"stream,omitempty"`
+	Model           string              `json:"model"`
+	Messages        []openAIChatMessage `json:"messages"`
+	Tools           []openAITool        `json:"tools,omitempty"`
+	Stream          bool                `json:"stream,omitempty"`
+	EnableThinking  *bool               `json:"enable_thinking,omitempty"`
+	ReasoningEffort string              `json:"reasoning_effort,omitempty"`
 }
 
 type openAIChatMessage struct {
@@ -252,10 +307,12 @@ func toOpenAIMessages(messages []Message) []openAIChatMessage {
 
 func (c *OpenAIClient) newChatRequest(req GenerateRequest, stream bool) openAIChatRequest {
 	return openAIChatRequest{
-		Model:    c.model,
-		Messages: toOpenAIMessages(req.Messages),
-		Tools:    toOpenAITools(req.Tools),
-		Stream:   stream,
+		Model:           c.model,
+		Messages:        toOpenAIMessages(req.Messages),
+		Tools:           toOpenAITools(req.Tools),
+		Stream:          stream,
+		EnableThinking:  c.enableThinking,
+		ReasoningEffort: c.reasoningEffort,
 	}
 }
 

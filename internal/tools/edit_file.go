@@ -58,35 +58,39 @@ func (EditFileTool) Execute(ctx context.Context, input json.RawMessage) (Result,
 		NewText string `json:"new_text"`
 	}
 	if err := json.Unmarshal(defaultJSON(input), &args); err != nil {
-		return Result{Content: "invalid arguments: " + err.Error(), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "invalid arguments: " + err.Error(), Recoverable: true, SuggestedNextStep: "Call edit_file again with valid JSON arguments."}), nil
 	}
 	if strings.TrimSpace(args.Path) == "" {
-		return Result{Content: "path is required", IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "path is required", Recoverable: true, SuggestedNextStep: "Retry edit_file with a workspace-relative path."}), nil
 	}
 	if args.OldText == "" {
-		return Result{Content: "old_text is required", IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "old_text is required", Recoverable: true, SuggestedNextStep: "Read the file first, then retry edit_file with exact old_text."}), nil
 	}
 	if len([]byte(args.NewText)) > maxEditFileBytes {
-		return Result{Content: fmt.Sprintf("new_text is too large: max %d bytes", maxEditFileBytes), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: fmt.Sprintf("new_text is too large: max %d bytes", maxEditFileBytes), Recoverable: true, SuggestedNextStep: "Retry with a smaller replacement."}), nil
 	}
 
 	_, target, rel, err := workspacePath(args.Path)
 	if err != nil {
-		return Result{Content: err.Error(), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorPathNotAllowed, Message: err.Error(), Recoverable: false, SuggestedNextStep: "Use a path inside the workspace.", Details: map[string]any{"path": args.Path}}), nil
 	}
 	if rel == "." {
-		return Result{Content: "path must be a file, got workspace root", IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "path must be a file, got workspace root", Recoverable: true, SuggestedNextStep: "Retry with a file path inside the workspace."}), nil
 	}
 
 	info, err := os.Stat(target)
 	if err != nil {
-		return Result{Content: "stat file: " + err.Error(), IsError: true}, nil
+		errType := ErrorExecution
+		if os.IsNotExist(err) {
+			errType = ErrorNotFound
+		}
+		return ErrorResult(ToolError{Type: errType, Message: "stat file: " + err.Error(), Recoverable: true, SuggestedNextStep: "Use list_files to inspect paths, then retry with an existing file.", Details: map[string]any{"path": rel}}), nil
 	}
 	if info.IsDir() {
-		return Result{Content: "path is a directory: " + rel, IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "path is a directory: " + rel, Recoverable: true, SuggestedNextStep: "Retry with a file path, not a directory.", Details: map[string]any{"path": rel}}), nil
 	}
 	if info.Size() > maxEditFileBytes {
-		return Result{Content: fmt.Sprintf("file is too large to edit: max %d bytes", maxEditFileBytes), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: fmt.Sprintf("file is too large to edit: max %d bytes", maxEditFileBytes), Recoverable: false, SuggestedNextStep: "Explain that this learning tool refuses large files."}), nil
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -95,7 +99,7 @@ func (EditFileTool) Execute(ctx context.Context, input json.RawMessage) (Result,
 
 	data, err := os.ReadFile(target)
 	if err != nil {
-		return Result{Content: "read file: " + err.Error(), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorExecution, Message: "read file: " + err.Error(), Recoverable: true, SuggestedNextStep: "Retry after checking file permissions or path.", Details: map[string]any{"path": rel}}), nil
 	}
 	content := string(data)
 
@@ -103,18 +107,18 @@ func (EditFileTool) Execute(ctx context.Context, input json.RawMessage) (Result,
 	// model from accidentally changing zero places or many similar places.
 	matches := strings.Count(content, args.OldText)
 	if matches == 0 {
-		return Result{Content: "old_text not found in file: " + rel, IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorNotFound, Message: "old_text not found in file: " + rel, Recoverable: true, SuggestedNextStep: "Use read_file to inspect the file, then retry edit_file with exact old_text.", Details: map[string]any{"path": rel}}), nil
 	}
 	if matches > 1 {
-		return Result{Content: fmt.Sprintf("old_text appears %d times; provide a more specific old_text", matches), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorNotUnique, Message: fmt.Sprintf("old_text appears %d times; provide a more specific old_text", matches), Recoverable: true, SuggestedNextStep: "Use read_file to inspect the surrounding text, then retry with a larger unique old_text.", Details: map[string]any{"path": rel, "matches": matches}}), nil
 	}
 
 	updated := strings.Replace(content, args.OldText, args.NewText, 1)
 	if len([]byte(updated)) > maxEditFileBytes {
-		return Result{Content: fmt.Sprintf("edited file would be too large: max %d bytes", maxEditFileBytes), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: fmt.Sprintf("edited file would be too large: max %d bytes", maxEditFileBytes), Recoverable: true, SuggestedNextStep: "Retry with a smaller replacement."}), nil
 	}
 	if err := os.WriteFile(target, []byte(updated), info.Mode().Perm()); err != nil {
-		return Result{Content: "write file: " + err.Error(), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorExecution, Message: "write file: " + err.Error(), Recoverable: true, SuggestedNextStep: "Check file permissions or choose a writable file.", Details: map[string]any{"path": rel}}), nil
 	}
 
 	return Result{Content: fmt.Sprintf("edited file: %s (replaced 1 occurrence)", rel)}, nil

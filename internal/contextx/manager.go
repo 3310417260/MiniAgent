@@ -1,21 +1,30 @@
 package contextx
 
-import "miniagent/internal/llm"
+import (
+	"context"
+
+	"miniagent/internal/llm"
+)
+
+type BuildOptions struct {
+	SessionID string
+	DebugAPI  bool
+}
 
 type Manager interface {
-	Build(messages []llm.Message) []llm.Message
+	Build(ctx context.Context, messages []llm.Message, opts BuildOptions) ([]llm.Message, error)
 }
 
 type RecentNManager struct {
 	MaxMessages int
 }
 
-func (m RecentNManager) Build(messages []llm.Message) []llm.Message {
+func (m RecentNManager) Build(ctx context.Context, messages []llm.Message, opts BuildOptions) ([]llm.Message, error) {
 	if len(messages) == 0 {
-		return nil
+		return nil, nil
 	}
 	if m.MaxMessages <= 0 {
-		return append([]llm.Message(nil), messages...)
+		return append([]llm.Message(nil), messages...), nil
 	}
 
 	system, rest := splitSystemMessage(messages)
@@ -26,7 +35,7 @@ func (m RecentNManager) Build(messages []llm.Message) []llm.Message {
 	out := make([]llm.Message, 0, len(system)+len(rest))
 	out = append(out, system...)
 	out = append(out, rest...)
-	return out
+	return out, nil
 }
 
 func splitSystemMessage(messages []llm.Message) ([]llm.Message, []llm.Message) {

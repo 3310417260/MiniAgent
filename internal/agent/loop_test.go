@@ -9,6 +9,7 @@ import (
 
 	"miniagent/internal/contextx"
 	"miniagent/internal/llm"
+	"miniagent/internal/plan"
 	"miniagent/internal/tools"
 )
 
@@ -189,6 +190,9 @@ func TestRunDeniesApprovalRequiredToolWithoutApprover(t *testing.T) {
 	if len(result.ToolResults) != 1 || !result.ToolResults[0].IsError {
 		t.Fatalf("tool results = %+v, want one error result", result.ToolResults)
 	}
+	if result.ToolResults[0].ErrorType != tools.ErrorPermissionDenied || result.ToolResults[0].Recoverable {
+		t.Fatalf("tool result = %+v, want unrecoverable permission_denied", result.ToolResults[0])
+	}
 }
 
 func TestRunApprovesApprovalRequiredTool(t *testing.T) {
@@ -242,6 +246,47 @@ func TestRunApprovesApprovalRequiredTool(t *testing.T) {
 	}
 	if result.Assistant.Content != "write finished" {
 		t.Fatalf("reply.Content = %q, want write finished", result.Assistant.Content)
+	}
+}
+
+func TestRunCanStopAfterToolCall(t *testing.T) {
+	call := llm.ToolCall{
+		ID:        "call_plan",
+		Name:      "set_plan",
+		Arguments: json.RawMessage(`{"title":"T","steps":["one"]}`),
+	}
+	client := &fakeLoopClient{
+		responses: []llm.GenerateResponse{
+			{
+				Assistant: llm.Message{
+					Role:      llm.RoleAssistant,
+					ToolCalls: []llm.ToolCall{call},
+				},
+				ToolCalls: []llm.ToolCall{call},
+			},
+		},
+	}
+	state := plan.NewState()
+	toolset := []tools.Tool{tools.SetPlanTool{State: state}}
+	runtime := &Agent{
+		Client:     client,
+		Dispatcher: NewDispatcher(toolset),
+		Tools:      toolset,
+		MaxTurns:   4,
+	}
+
+	result, err := runtime.Run(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "plan"}}, RunOptions{StopAfterToolCall: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(client.requests))
+	}
+	if len(result.ToolResults) != 1 || result.ToolResults[0].ToolName != "set_plan" {
+		t.Fatalf("tool results = %+v, want one set_plan result", result.ToolResults)
+	}
+	if state.Empty() {
+		t.Fatal("plan state was not set")
 	}
 }
 

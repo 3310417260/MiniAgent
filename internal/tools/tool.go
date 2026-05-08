@@ -10,6 +10,13 @@ import (
 type Result struct {
 	Content string
 	IsError bool
+	Error   *ToolError
+	Events  []Event
+}
+
+type Event struct {
+	Type string
+	Data map[string]any
 }
 
 type Permission string
@@ -39,4 +46,12 @@ type Tool interface {
 	Permission() Permission
 	Schema() llm.ToolSchema
 	Execute(ctx context.Context, input json.RawMessage) (Result, error)
+}
+
+type PreflightTool interface {
+	Tool
+
+	// Preflight validates whether a requested tool call could be executed before
+	// the harness asks the user for approval. It must not perform side effects.
+	Preflight(ctx context.Context, input json.RawMessage) (Result, error)
 }

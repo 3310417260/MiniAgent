@@ -3,16 +3,38 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"miniagent/internal/contextx"
 	"miniagent/internal/llm"
 	"miniagent/internal/logx"
+	"miniagent/internal/skill"
 )
 
 type fakeStreamClient struct {
 	streamRequests []llm.GenerateRequest
 	generateCalls  int
+}
+
+type fakeGenerateClient struct {
+	requests []llm.GenerateRequest
+}
+
+func (f *fakeGenerateClient) Generate(ctx context.Context, req llm.GenerateRequest) (llm.GenerateResponse, error) {
+	f.requests = append(f.requests, cloneGenerateRequest(req))
+	return llm.GenerateResponse{
+		Assistant: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: "dry run guidance",
+		},
+	}, nil
+}
+
+func (f *fakeGenerateClient) GenerateStream(ctx context.Context, req llm.GenerateRequest, onDelta func(string)) (llm.GenerateResponse, error) {
+	return llm.GenerateResponse{}, errors.New("GenerateStream should not be used")
 }
 
 func (f *fakeStreamClient) Generate(ctx context.Context, req llm.GenerateRequest) (llm.GenerateResponse, error) {
@@ -43,7 +65,7 @@ func TestChatStreamUsesGenerateStreamWithoutTools(t *testing.T) {
 	}
 	var printed string
 
-	reply, updated, err := chatStream(client, contextx.RecentNManager{MaxMessages: 1}, logx.NoopLogger{}, "test", messages, "plain chat", func(delta string) {
+	reply, updated, err := chatStream(client, contextx.RecentNManager{MaxMessages: 1}, logx.NoopLogger{}, "test", messages, "plain chat", false, func(delta string) {
 		printed += delta
 	})
 	if err != nil {
@@ -116,6 +138,51 @@ func TestMatchesLogFilter(t *testing.T) {
 	}
 	if !matchesLogFilter(event, logFilter{All: true, ErrorsOnly: true}) {
 		t.Fatal("expected all-session error match")
+	}
+}
+
+func TestLoadSelectedSkillForTaskInjectsOnlySelectedSkillWithoutTools(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "xlsx"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "xlsx", "SKILL.md"), []byte(`---
+name: xlsx
+description: Work with spreadsheets.
+---
+
+# XLSX
+
+Use spreadsheet instructions.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakeGenerateClient{}
+	loaded, reply, err := loadSelectedSkillForTask(client, logx.NoopLogger{}, skill.NewStore(root), skill.Selection{
+		Name:   "xlsx",
+		Reason: "spreadsheet task",
+	}, "整理表格", false, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Name != "xlsx" || reply.Content != "dry run guidance" {
+		t.Fatalf("loaded=%+v reply=%+v, want xlsx dry run", loaded, reply)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(client.requests))
+	}
+
+	req := client.requests[0]
+	if len(req.Tools) != 0 {
+		t.Fatalf("tools = %d, want no tools for dry-run skill load", len(req.Tools))
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %d, want system + user", len(req.Messages))
+	}
+	if !strings.Contains(req.Messages[1].Content, "Loaded SKILL.md body:") ||
+		!strings.Contains(req.Messages[1].Content, "Use spreadsheet instructions.") {
+		t.Fatalf("user message = %q, want loaded skill body", req.Messages[1].Content)
 	}
 }
 

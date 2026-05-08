@@ -1,0 +1,15 @@
+{
+  "scripts": [
+    {
+      "path": "scripts/recalc.py",
+      "description": "Recalculate formulas in an Excel workbook using LibreOffice.",
+      "allowed": false,
+      "reason": "Reviewed but not authorized yet: this script invokes LibreOffice, writes a LibreOffice macro under the user's config directory, and saves the workbook. MiniAgent needs controlled Python interpreter support and workspace file-argument validation before enabling it.",
+      "requires_approval": true,
+      "timeout_seconds": 30,
+      "max_output_bytes": 8000,
+      "max_args": 2,
+      "max_arg_bytes": 300
+    }
+  ]
+}

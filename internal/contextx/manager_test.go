@@ -1,6 +1,7 @@
 package contextx
 
 import (
+	"context"
 	"testing"
 
 	"miniagent/internal/llm"
@@ -14,7 +15,10 @@ func TestRecentNManagerKeepsSystemAndRecentMessages(t *testing.T) {
 		{Role: llm.RoleUser, Content: "three"},
 	}
 
-	got := RecentNManager{MaxMessages: 2}.Build(messages)
+	got, err := RecentNManager{MaxMessages: 2}.Build(context.Background(), messages, BuildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 3 {
 		t.Fatalf("len(got) = %d, want 3", len(got))
 	}
@@ -33,7 +37,10 @@ func TestRecentNManagerWithoutSystem(t *testing.T) {
 		{Role: llm.RoleUser, Content: "three"},
 	}
 
-	got := RecentNManager{MaxMessages: 1}.Build(messages)
+	got, err := RecentNManager{MaxMessages: 1}.Build(context.Background(), messages, BuildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 || got[0].Content != "three" {
 		t.Fatalf("messages = %+v, want newest message", got)
 	}

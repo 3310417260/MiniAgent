@@ -56,28 +56,32 @@ func (ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (Result,
 		MaxBytes int    `json:"max_bytes"`
 	}
 	if err := json.Unmarshal(defaultJSON(input), &args); err != nil {
-		return Result{Content: "invalid arguments: " + err.Error(), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "invalid arguments: " + err.Error(), Recoverable: true, SuggestedNextStep: "Call read_file again with valid JSON arguments."}), nil
 	}
 	if strings.TrimSpace(args.Path) == "" {
-		return Result{Content: "path is required", IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "path is required", Recoverable: true, SuggestedNextStep: "Retry read_file with a workspace-relative path."}), nil
 	}
 
 	_, target, rel, err := workspacePath(args.Path)
 	if err != nil {
-		return Result{Content: err.Error(), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorPathNotAllowed, Message: err.Error(), Recoverable: false, SuggestedNextStep: "Use a path inside the workspace.", Details: map[string]any{"path": args.Path}}), nil
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return Result{Content: "stat file: " + err.Error(), IsError: true}, nil
+		errType := ErrorExecution
+		if os.IsNotExist(err) {
+			errType = ErrorNotFound
+		}
+		return ErrorResult(ToolError{Type: errType, Message: "stat file: " + err.Error(), Recoverable: true, SuggestedNextStep: "Use list_files to inspect available paths, then retry read_file.", Details: map[string]any{"path": rel}}), nil
 	}
 	if info.IsDir() {
-		return Result{Content: "path is a directory: " + rel, IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorValidation, Message: "path is a directory: " + rel, Recoverable: true, SuggestedNextStep: "Use list_files for directories or retry read_file with a file path.", Details: map[string]any{"path": rel}}), nil
 	}
 
 	maxBytes := clamp(args.MaxBytes, defaultReadMaxBytes, maxReadBytes)
 	data, err := os.ReadFile(target)
 	if err != nil {
-		return Result{Content: "read file: " + err.Error(), IsError: true}, nil
+		return ErrorResult(ToolError{Type: ErrorExecution, Message: "read file: " + err.Error(), Recoverable: true, SuggestedNextStep: "Check file permissions or retry with a different file.", Details: map[string]any{"path": rel}}), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
